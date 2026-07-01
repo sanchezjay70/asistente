@@ -3,6 +3,7 @@ import sqlite3, zipfile, json, os, re, io, time
 from pathlib import Path
 import google.genai as genai
 from google.genai import types
+import PyPDF2 # <-- NUEVA LIBRERÍA PARA LEER PDF
 
 # Librerías de Google Drive
 from google.oauth2 import service_account
@@ -168,17 +169,90 @@ def buscar_todo(consulta):
         except: pass
     return resultados[:20]
 
-def preguntar_gemini(pregunta, contexto):
+# =====================================================================
+# INSTRUCCIONES COMPLETAS (Tu prompt original + Referencias y Memoria)
+# =====================================================================
+instrucciones = """Eres 'Luz de la Palabra', un asistente experto en oratoria, enseñanza y la preparación de comentarios y discursos. Estás capacitado con los mejores principios de estudio, investigación y enseñanza.
+
+Tu objetivo es ayudar al usuario a preparar sus asignaciones de forma estructurada, profunda y efectiva, utilizando estrictamente el material que él te proporcione.
+
+INSTRUCCIONES ESTRICTAS DE COMPORTAMIENTO:
+
+1. FUENTE DE INFORMACIÓN (REGLA DE ORO): Si el usuario pega un texto, párrafo, referencia, adjunta un documento o la base de datos te da información, ESA es tu fuente de investigación. NUNCA digas que "no tienes la información". Analiza profundamente el texto proporcionado y cumple la tarea basándote en él.
+
+2. ANÁLISIS PROFUNDO DE CAPÍTULOS O RELATOS:
+   Cuando el usuario te pida analizar un capítulo o relato completo, estructura tu respuesta respondiendo a estas preguntas clave basándote en el texto:
+   - CONTEXTO: ¿Cuál era el contexto? ¿Quién escribió esto y para quién? ¿En qué año sucedió? ¿Por qué se escribió? ¿Cuándo y dónde ocurrieron los hechos? ¿Cuáles eran las circunstancias? ¿Qué ocurrió antes y después?
+   - SOBRE JEHOVÁ Y SU PROPÓSITO: ¿Qué me enseña esto sobre Jehová? ¿Cómo contribuye esta parte al cumplimiento del propósito de Dios? ¿Por qué incluyó Jehová este relato en su Palabra? ¿Qué relación tiene con el tema central de la Biblia? ¿Qué espera Jehová de quienes desean ser sus amigos? ¿Qué tipo de personas están cerca de Jehová, y de qué pueden estar seguras? ¿Qué tenemos que hacer para estar cerca de Jehová? ¿Qué debemos evitar para seguir siendo amigos de Jehová?
+   - LECCIONES DE LOS PERSONAJES: ¿Cómo se sintieron las personas que aparecen en el pasaje? ¿Qué personajes demostraron fe (o falta de fe) y en qué se parecen a mí? ¿Qué cualidades mostraron y por qué debo imitarlas? ¿Qué defectos tuvieron y por qué debo evitarlos?
+   - APLICACIÓN Y MINISTERIO: ¿Cómo puedo aplicar esta información en mi vida? ¿Cómo puede ayudarme este pasaje? ¿En qué situación de mi vida he visto que este principio es cierto? ¿Cómo puedo usar estos versículos para ayudar a otros?
+
+3. CÓMO ESTUDIAR E INVESTIGAR PARA SACAR "PERLAS": 
+   - Cuando se te pida buscar perlas espirituales, analiza el texto más allá de lo superficial.
+   - Busca y destaca: cualidades divinas (qué nos enseña sobre Dios), principios bíblicos prácticos, lecciones para el ministerio o detalles del contexto histórico. 
+   - Presenta estas perlas de forma clara y lista para ser comentada.
+
+4. CÓMO RESPONDER A LAS PREGUNTAS DE ESTUDIO:
+   - Lee con cuidado la pregunta específica del usuario.
+   - Busca la respuesta exacta dentro del texto que te proporcionó.
+   - Responde usando TUS PROPIAS PALABRAS de forma clara y directa. NO copies y pegues todo el párrafo original. Ve al grano y aísla la idea principal.
+
+5. COMENTARIOS DE 30 SEGUNDOS:
+   - Al pedirte un comentario para una reunión, redacta una respuesta de unas 60-75 palabras. 
+   - Debe ser directa, usar palabras sencillas y, de ser posible, destacar el valor práctico de la información.
+
+6. DESARROLLO DE BOSQUEJOS Y DISCURSOS:
+   Aplica esta estructura obligatoria al rellenar o preparar un bosquejo:
+   - Introducción: Crea aperturas que despierten el interés del auditorio inmediatamente.
+   - Desarrollo (Técnica de Enseñanza): En cada punto principal o texto clave, debes aplicar tres pasos:
+      a) EXPLICAR: Aclarar el significado del texto o el punto.
+      b) ILUSTRAR: Usar comparaciones, ejemplos sencillos o situaciones cotidianas.
+      c) APLICAR: Mostrarle al auditorio cómo poner en práctica esa enseñanza en su vida diaria de forma amorosa y razonable.
+   - Conclusión: Breve, que repase los puntos clave y motive a la acción.
+
+7. FUENTES Y REFERENCIAS (OBLIGATORIO): Al final de CADA respuesta, DEBES colocar la fuente exacta en la que te basaste. Indica la publicación, la página, el párrafo, la sección del documento adjunto o el texto bíblico utilizado.
+
+8. CORRECCIONES DEL USUARIO: Si el usuario te dice que tu respuesta es incorrecta, acéptalo con amabilidad, revisa tu análisis previo en el historial de esta conversación y genera una nueva respuesta corregida basada en sus indicaciones.
+
+9. TONO Y ESTILO:
+   - Usa preguntas retóricas para hacer reflexionar al auditorio.
+   - Mantén siempre un tono amable, animador, edificante y respetuoso."""
+
+# ── NUEVA FUNCIÓN MEJORADA: INCLUYE HISTORIAL Y ADJUNTOS ──────
+def preguntar_gemini(historial_ui, nueva_pregunta, contexto_jwpub, texto_adjunto):
     try:
         cliente = genai.Client(api_key=cfg["gemini_key"])
-        prompt = f"Basa tu respuesta SOLO en estas publicaciones de los Testigos de Jehová:\n{contexto}\n\nPREGUNTA: {pregunta}"
+        
+        # 1. Construir el historial para que la IA tenga "memoria"
+        contents = []
+        for msg in historial_ui:
+            role = "user" if msg["r"] == "u" else "model"
+            contents.append(types.Content(role=role, parts=[types.Part(text=msg["t"])]))
+        
+        # 2. Armar la pregunta actual uniendo todo (Pregunta + JWPUB + PDF)
+        prompt_actual = nueva_pregunta
+        if contexto_jwpub or texto_adjunto:
+            prompt_actual += "\n\n--- INFORMACIÓN DE REFERENCIA OBLIGATORIA ---\n"
+            if contexto_jwpub:
+                prompt_actual += f"\nDe las publicaciones (JWPUB):\n{contexto_jwpub}\n"
+            if texto_adjunto:
+                prompt_actual += f"\nDel documento adjunto (PDF/TXT):\n{texto_adjunto}\n"
+        
+        contents.append(types.Content(role="user", parts=[types.Part(text=prompt_actual)]))
+        
+        # 3. Enviar todo a Gemini con las INSTRUCCIONES MAESTRAS
         resp = cliente.models.generate_content(
             model="gemini-2.5-flash",
-            contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
-            config=types.GenerateContentConfig(temperature=0.2, max_output_tokens=3000)
+            contents=contents,
+            config=types.GenerateContentConfig(
+                temperature=0.2, 
+                max_output_tokens=3000,
+                system_instruction=instrucciones
+            )
         )
         return resp.text or "Sin respuesta."
-    except Exception as e: return f"❌ Error: {str(e)}"
+    except Exception as e: 
+        return f"❌ Error: {str(e)}"
 
 # ── Vistas ────────────────────────────────────────────────────────
 st.markdown('<div class="hero"><h1>Luz de la Palabra</h1><p>Tu asistente bíblico sincronizado en la nube</p></div>', unsafe_allow_html=True)
@@ -198,20 +272,46 @@ with t_biblio:
 
 with t_chat:
     if "hist" not in st.session_state: st.session_state.hist = []
+    
+    # NUEVO: EXPANDER PARA SUBIR ARCHIVOS (PDF/TXT)
+    texto_adjunto = ""
+    with st.expander("📎 Adjuntar documento a tu próximo mensaje (PDF o TXT)"):
+        archivo_chat = st.file_uploader("Sube un archivo para analizarlo:", type=['pdf', 'txt'])
+        if archivo_chat:
+            if archivo_chat.name.endswith('.pdf'):
+                try:
+                    lector = PyPDF2.PdfReader(archivo_chat)
+                    for pag in lector.pages:
+                        if pag.extract_text():
+                            texto_adjunto += pag.extract_text() + "\n"
+                    st.success("✅ PDF listo para ser analizado.")
+                except Exception as e:
+                    st.error("Error al leer PDF.")
+            elif archivo_chat.name.endswith('.txt'):
+                texto_adjunto = archivo_chat.read().decode("utf-8")
+                st.success("✅ TXT listo para ser analizado.")
+
+    # Mostrar el historial en pantalla
     for msg in st.session_state.hist:
         clase = "msg-u" if msg["r"]=="u" else "msg-a"
         st.markdown(f'<div class="{clase}">{msg["t"]}</div>', unsafe_allow_html=True)
     
-    q = st.chat_input("Escribe tu pregunta...")
+    q = st.chat_input("Escribe tu pregunta o pídele que corrija algo...")
     if q:
         st.session_state.hist.append({"r":"u","t":q})
         st.markdown(f'<div class="msg-u">{q}</div>', unsafe_allow_html=True)
         caja = st.empty()
+        
         caja.markdown('<div class="thinking">Buscando en tus publicaciones...</div>', unsafe_allow_html=True)
         res = buscar_todo(q)
         ctx = "\n".join([f"• {r['titulo']} (de {r['pub']})" for r in res]) if res else ""
+        
         caja.markdown('<div class="thinking">Consultando a Gemini...</div>', unsafe_allow_html=True)
-        resp = preguntar_gemini(q, ctx) if ctx else "No encontré referencias en tus publicaciones subidas."
+        
+        # Pasamos el historial previo a la pregunta, la nueva pregunta, el contexto de JWPUB y el texto adjunto
+        historial_previo = st.session_state.hist[:-1]
+        resp = preguntar_gemini(historial_previo, q, ctx, texto_adjunto) 
+        
         caja.empty()
         st.session_state.hist.append({"r":"a","t":resp})
         st.markdown(f'<div class="msg-a">{resp}</div>', unsafe_allow_html=True)
