@@ -56,10 +56,12 @@ FOLDER_NAME = "Mis Publicaciones"
 
 @st.cache_resource
 def iniciar_drive():
-    if not CREDS_FILE.exists(): return None
     try:
-        creds = service_account.Credentials.from_service_account_file(str(CREDS_FILE), scopes=SCOPES)
+        # Aquí le decimos que busque en la caja fuerte de Streamlit (Secrets)
+        info_credenciales = json.loads(st.secrets["google_credentials"])
+        creds = service_account.Credentials.from_service_account_info(info_credenciales, scopes=SCOPES)
         service = build('drive', 'v3', credentials=creds)
+        
         # Buscar la ID de la carpeta
         results = service.files().list(q=f"mimeType='application/vnd.google-apps.folder' and name='{FOLDER_NAME}' and trashed=false", fields="files(id, name)").execute()
         items = results.get('files', [])
