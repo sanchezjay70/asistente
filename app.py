@@ -3,7 +3,7 @@ import sqlite3, zipfile, json, os, re, io, time
 from pathlib import Path
 import google.genai as genai
 from google.genai import types
-import PyPDF2 # <-- NUEVA LIBRERÍA PARA LEER PDF
+import PyPDF2
 
 # Librerías de Google Drive
 from google.oauth2 import service_account
@@ -31,12 +31,6 @@ section[data-testid="stSidebar"] .stButton>button{background:linear-gradient(135
 .dot{width:7px;height:7px;border-radius:50%;background:#c9a84c;display:inline-block;animation:blink 1.3s infinite;}
 .dot:nth-child(2){animation-delay:.2s;}.dot:nth-child(3){animation-delay:.4s;}
 @keyframes blink{0%,80%,100%{opacity:.2;transform:scale(.8)}40%{opacity:1;transform:scale(1)}}
-.src-chip{display:inline-flex;align-items:center;gap:4px;background:#e8f5ee;border:1px solid #b8ddc8;border-radius:20px;padding:3px 11px;font-size:.74rem;color:#2d7a5a;font-weight:500;margin:2px;}
-.alert{border-radius:10px;padding:11px 16px;font-size:.86rem;margin:8px 0;}
-.alert.ok{background:#e8f5ee;border-left:3px solid #2d7a5a;color:#0a5030;}
-.alert.warn{background:#fff8e8;border-left:3px solid #c9a84c;color:#7a5010;}
-.alert.info{background:#e8f0fe;border-left:3px solid #1a4a9a;color:#1a3080;}
-.sec-label{font-size:.69rem;font-weight:600;color:#7a8098;text-transform:uppercase;letter-spacing:.1em;margin:20px 0 10px;display:flex;align-items:center;gap:8px;}
 .pub-card{background:white;border-radius:12px;padding:14px 16px;border:1.5px solid #e2d9c8;transition:all .2s;position:relative;margin-bottom:4px;}
 .pub-card.ok{border-color:#b8ddc8;background:linear-gradient(135deg,white,#f5fdf8);}
 .pub-card .t{font-weight:600;font-size:.85rem;color:#1a2035;line-height:1.3;}
@@ -48,7 +42,6 @@ APP_DIR  = Path(os.path.dirname(os.path.abspath(__file__)))
 CFG_FILE = APP_DIR / ".luz_cfg.json"
 PUBS_DIR = APP_DIR / "mis_publicaciones"
 PUBS_DIR.mkdir(exist_ok=True)
-CREDS_FILE = APP_DIR / "credenciales.json"
 
 # ── CONEXIÓN GOOGLE DRIVE ──────────────────────────────────────────
 SCOPES = ['https://www.googleapis.com/auth/drive']
@@ -57,7 +50,10 @@ FOLDER_NAME = "Mis Publicaciones"
 @st.cache_resource
 def iniciar_drive():
     try:
-        # Aquí le decimos que busque en la caja fuerte de Streamlit (Secrets)
+        # Leer las credenciales de la caja fuerte (Secrets)
+        if "google_credentials" not in st.secrets:
+            return None
+            
         info_credenciales = json.loads(st.secrets["google_credentials"])
         creds = service_account.Credentials.from_service_account_info(info_credenciales, scopes=SCOPES)
         service = build('drive', 'v3', credentials=creds)
@@ -68,7 +64,7 @@ def iniciar_drive():
         if not items: return None
         folder_id = items[0]['id']
         
-        # Descargar archivos .db que no estén en local
+        # Descargar archivos .db que no estén en local (Restaurar memoria)
         db_results = service.files().list(q=f"'{folder_id}' in parents and trashed=false and name contains '.db'", fields="files(id, name)").execute()
         dbs = db_results.get('files', [])
         for db in dbs:
@@ -82,17 +78,24 @@ def iniciar_drive():
                 with open(local_path, 'wb') as f: f.write(fh.getvalue())
         return {"service": service, "folder_id": folder_id}
     except Exception as e:
+        st.error(f"Error de conexión con Drive: {e}")
         return None
 
 drive_conn = iniciar_drive()
 
 def subir_a_drive(local_path, file_name):
-    if not drive_conn: return
+    if not drive_conn: 
+        st.error("⚠️ No hay conexión con Drive para guardar el archivo.")
+        return False
     try:
         file_metadata = {'name': file_name, 'parents': [drive_conn["folder_id"]]}
-        media = MediaFileUpload(local_path, mimetype='application/octet-stream')
+        # resumable=True permite subir archivos pesados como Perspicacia sin que se corte
+        media = MediaFileUpload(local_path, mimetype='application/octet-stream', resumable=True)
         drive_conn["service"].files().create(body=file_metadata, media_body=media, fields='id').execute()
-    except Exception as e: pass
+        return True
+    except Exception as e: 
+        st.error(f"❌ Error al subir {file_name} a Google Drive: {str(e)}")
+        return False
 
 # ── Funciones Base ─────────────────────────────────────────────
 def load_cfg():
@@ -123,7 +126,7 @@ with st.sidebar:
     if not key: st.warning("Configura tu clave de Gemini"); st.stop()
     
     if drive_conn: st.success("☁️ Conectado a Google Drive")
-    else: st.error("☁️ Sin conexión a Drive (revisa credenciales.json y la carpeta)")
+    else: st.error("☁️ Sin conexión a Drive. Revisa los Secrets de Streamlit.")
 
 # ── Importador JWPUB ───────────────────────────────────────────────
 def _es_sqlite(b): return len(b) > 16 and b[:16].startswith(b"SQLite format 3")
@@ -148,9 +151,13 @@ def importar_jwpub(archivo_bytes, nombre):
             db_bytes = _extraer_sqlite(zf)
             if not db_bytes: return {"ok":False,"error":"No es un JWPUB válido"}
             db_dest.write_bytes(db_bytes)
-            # Respaldo en Drive
-            subir_a_drive(str(db_dest), f"{nombre_limpio}.db")
-            return {"ok":True,"nombre":nombre_limpio}
+            
+            # Subir a Drive y comprobar si hubo éxito
+            exito_drive = subir_a_drive(str(db_dest), f"{nombre_limpio}.db")
+            if exito_drive:
+                return {"ok":True,"nombre":nombre_limpio}
+            else:
+                return {"ok":False,"error":"Fallo al subir a Google Drive."}
     except Exception as e: return {"ok":False,"error":str(e)}
 
 # ── Búsqueda e IA ──────────────────────────────────────────────
@@ -171,9 +178,6 @@ def buscar_todo(consulta):
         except: pass
     return resultados[:20]
 
-# =====================================================================
-# INSTRUCCIONES COMPLETAS (Tu prompt original + Referencias y Memoria)
-# =====================================================================
 instrucciones = """Eres 'Luz de la Palabra', un asistente experto en oratoria, enseñanza y la preparación de comentarios y discursos. Estás capacitado con los mejores principios de estudio, investigación y enseñanza.
 
 Tu objetivo es ayudar al usuario a preparar sus asignaciones de forma estructurada, profunda y efectiva, utilizando estrictamente el material que él te proporcione.
@@ -220,18 +224,15 @@ INSTRUCCIONES ESTRICTAS DE COMPORTAMIENTO:
    - Usa preguntas retóricas para hacer reflexionar al auditorio.
    - Mantén siempre un tono amable, animador, edificante y respetuoso."""
 
-# ── NUEVA FUNCIÓN MEJORADA: INCLUYE HISTORIAL Y ADJUNTOS ──────
 def preguntar_gemini(historial_ui, nueva_pregunta, contexto_jwpub, texto_adjunto):
     try:
         cliente = genai.Client(api_key=cfg["gemini_key"])
         
-        # 1. Construir el historial para que la IA tenga "memoria"
         contents = []
         for msg in historial_ui:
             role = "user" if msg["r"] == "u" else "model"
             contents.append(types.Content(role=role, parts=[types.Part(text=msg["t"])]))
         
-        # 2. Armar la pregunta actual uniendo todo (Pregunta + JWPUB + PDF)
         prompt_actual = nueva_pregunta
         if contexto_jwpub or texto_adjunto:
             prompt_actual += "\n\n--- INFORMACIÓN DE REFERENCIA OBLIGATORIA ---\n"
@@ -242,7 +243,6 @@ def preguntar_gemini(historial_ui, nueva_pregunta, contexto_jwpub, texto_adjunto
         
         contents.append(types.Content(role="user", parts=[types.Part(text=prompt_actual)]))
         
-        # 3. Enviar todo a Gemini con las INSTRUCCIONES MAESTRAS
         resp = cliente.models.generate_content(
             model="gemini-2.5-flash",
             contents=contents,
@@ -262,12 +262,12 @@ pubs_ok = list(PUBS_DIR.glob("*.db"))
 t_chat, t_biblio = st.tabs(["💬 Consultar", "📚 Biblioteca"])
 
 with t_biblio:
-    archivos = st.file_uploader("Sube archivos JWPUB (Se guardarán en tu Drive)", type=["jwpub","zip"], accept_multiple_files=True)
+    archivos = st.file_uploader("Sube archivos JWPUB (Se guardarán en tu Drive de forma segura)", type=["jwpub","zip"], accept_multiple_files=True)
     if archivos and st.button("Guardar en mi Biblioteca"):
         for arch in archivos:
             res = importar_jwpub(arch.read(), arch.name)
             if res["ok"]: st.success(f"✅ {arch.name} importado y guardado en Drive!")
-            else: st.error(f"⚠️ {arch.name}: Error al importar")
+            else: st.error(f"⚠️ {arch.name}: {res['error']}")
         time.sleep(2); st.rerun()
     if pubs_ok:
         for p in pubs_ok: st.markdown(f'<div class="pub-card ok"><div class="t">📖 {p.stem}</div></div>', unsafe_allow_html=True)
@@ -275,10 +275,9 @@ with t_biblio:
 with t_chat:
     if "hist" not in st.session_state: st.session_state.hist = []
     
-    # NUEVO: EXPANDER PARA SUBIR ARCHIVOS (PDF/TXT)
     texto_adjunto = ""
     with st.expander("📎 Adjuntar documento a tu próximo mensaje (PDF o TXT)"):
-        archivo_chat = st.file_uploader("Sube un archivo para analizarlo:", type=['pdf', 'txt'])
+        archivo_chat = st.file_uploader("Sube un archivo temporal para analizarlo:", type=['pdf', 'txt'])
         if archivo_chat:
             if archivo_chat.name.endswith('.pdf'):
                 try:
@@ -293,7 +292,6 @@ with t_chat:
                 texto_adjunto = archivo_chat.read().decode("utf-8")
                 st.success("✅ TXT listo para ser analizado.")
 
-    # Mostrar el historial en pantalla
     for msg in st.session_state.hist:
         clase = "msg-u" if msg["r"]=="u" else "msg-a"
         st.markdown(f'<div class="{clase}">{msg["t"]}</div>', unsafe_allow_html=True)
@@ -310,7 +308,6 @@ with t_chat:
         
         caja.markdown('<div class="thinking">Consultando a Gemini...</div>', unsafe_allow_html=True)
         
-        # Pasamos el historial previo a la pregunta, la nueva pregunta, el contexto de JWPUB y el texto adjunto
         historial_previo = st.session_state.hist[:-1]
         resp = preguntar_gemini(historial_previo, q, ctx, texto_adjunto) 
         
