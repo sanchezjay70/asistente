@@ -1,5 +1,5 @@
 import streamlit as st
-import sqlite3, zipfile, json, os, re, io, time
+import sqlite3, zipfile, json, os, re, io
 from pathlib import Path
 import google.genai as genai
 from google.genai import types
@@ -8,129 +8,36 @@ import PyPDF2
 # Librerías de Google Drive
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
+from googleapiclient.http import MediaIoBaseDownload
 
-st.set_page_config(page_title="Luz de la Palabra", page_icon="📖", layout="wide", initial_sidebar_state="expanded")
+# 1. CONFIGURACIÓN DE PÁGINA (Moderna)
+st.set_page_config(page_title="Luz de la Palabra", page_icon="📖", layout="centered", initial_sidebar_state="collapsed")
 
+# 2. DISEÑO VISUAL MEJORADO (CSS Premium)
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,600;1,400&family=DM+Sans:wght@300;400;500;600&display=swap');
-*,html,body{font-family:'DM Sans',sans-serif;}
-h1,h2,h3{font-family:'EB Garamond',serif;}
-.stApp{background:#f3efe6;}
-section[data-testid="stSidebar"]{background:linear-gradient(180deg,#0d1117 0%,#141b2d 100%) !important;border-right:1px solid #1e2535;}
-section[data-testid="stSidebar"] *{color:#8a94b0 !important;}
-section[data-testid="stSidebar"] .stTextInput input{background:#131825 !important;border:1px solid #252d42 !important;color:#c8d0e8 !important;border-radius:8px !important;font-size:13px !important;}
-section[data-testid="stSidebar"] .stButton>button{background:linear-gradient(135deg,#c9a84c,#e8c060) !important;color:#0d1117 !important;border:none !important;border-radius:8px !important;font-weight:600 !important;width:100% !important;}
-.hero{background:linear-gradient(160deg,#0d1117,#141b2d,#0d1a30);border-radius:20px;padding:2rem 2.5rem;margin-bottom:1.5rem;position:relative;overflow:hidden;box-shadow:0 12px 40px rgba(13,17,23,.35);}
-.hero h1{color:#f0ece0 !important;font-size:2.2rem !important;margin:0 0 .2rem !important;font-weight:500 !important;font-style:italic;}
-.hero p{color:#5a6480;font-size:.88rem;margin:0 0 .8rem;}
-.msg-u{background:#1a2035;color:#e8ecf8 !important;border-radius:20px 20px 5px 20px;padding:12px 18px;margin:8px 0 8px 20%;font-size:.92rem;line-height:1.65;box-shadow:0 3px 14px rgba(26,26,46,.22);}
-.msg-a{background:white;border:1px solid #e2d9c8;border-radius:5px 20px 20px 20px;padding:18px 22px;margin:8px 20% 8px 0;font-size:.93rem;line-height:1.78;box-shadow:0 3px 14px rgba(0,0,0,.05);}
-.thinking{background:white;border:1px solid #e2d9c8;border-radius:5px 20px 20px 20px;padding:14px 20px;margin:8px 20% 8px 0;color:#8a98b8;font-size:.83rem;box-shadow:0 2px 8px rgba(0,0,0,.04);display:flex;align-items:center;gap:10px;}
-.dot{width:7px;height:7px;border-radius:50%;background:#c9a84c;display:inline-block;animation:blink 1.3s infinite;}
-.dot:nth-child(2){animation-delay:.2s;}.dot:nth-child(3){animation-delay:.4s;}
-@keyframes blink{0%,80%,100%{opacity:.2;transform:scale(.8)}40%{opacity:1;transform:scale(1)}}
-.pub-card{background:white;border-radius:12px;padding:14px 16px;border:1.5px solid #e2d9c8;transition:all .2s;position:relative;margin-bottom:4px;}
-.pub-card.ok{border-color:#b8ddc8;background:linear-gradient(135deg,white,#f5fdf8);}
-.pub-card .t{font-weight:600;font-size:.85rem;color:#1a2035;line-height:1.3;}
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&family=Merriweather:ital,wght@0,300;0,700;1,300&display=swap');
+html, body, .stApp { background-color: #F7F9FC; font-family: 'Inter', sans-serif; }
+h1, h2, h3 { font-family: 'Merriweather', serif; color: #1E293B; }
+.hero { background: linear-gradient(135deg, #1E293B 0%, #334155 100%); padding: 2rem; border-radius: 16px; text-align: center; margin-bottom: 2rem; box-shadow: 0 10px 25px rgba(0,0,0,0.1); }
+.hero h1 { color: #F8FAFC !important; font-size: 2.2rem; font-weight: 700; margin-bottom: 0.5rem; }
+.hero p { color: #CBD5E1; font-size: 1rem; }
+.chat-user { background-color: #2563EB; color: white; padding: 1rem 1.5rem; border-radius: 20px 20px 5px 20px; margin: 1rem 0 1rem 20%; box-shadow: 0 4px 6px rgba(37, 99, 235, 0.2); font-size: 1rem; line-height: 1.5; }
+.chat-ai { background-color: white; color: #334155; padding: 1.5rem; border-radius: 5px 20px 20px 20px; margin: 1rem 20% 1rem 0; border: 1px solid #E2E8F0; box-shadow: 0 4px 12px rgba(0,0,0,0.05); font-size: 1.05rem; line-height: 1.7; font-family: 'Merriweather', serif; }
+.chat-ai strong { color: #0F172A; }
+.stFileUploader { background-color: white; padding: 1rem; border-radius: 12px; border: 1px dashed #CBD5E1; }
+.status-badge { display: inline-block; padding: 0.25rem 0.75rem; border-radius: 999px; font-size: 0.875rem; font-weight: 600; background: #DEF7EC; color: #03543F; border: 1px solid #31C48D; margin-bottom: 1rem; }
 </style>
 """, unsafe_allow_html=True)
 
 # ── Config persistente ─────────────────────────────────────────────
 APP_DIR  = Path(os.path.dirname(os.path.abspath(__file__)))
-CFG_FILE = APP_DIR / ".luz_cfg.json"
 PUBS_DIR = APP_DIR / "mis_publicaciones"
 PUBS_DIR.mkdir(exist_ok=True)
-
-# ── CONEXIÓN GOOGLE DRIVE ──────────────────────────────────────────
-SCOPES = ['https://www.googleapis.com/auth/drive']
+SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 FOLDER_NAME = "Mis Publicaciones"
 
-@st.cache_resource
-def iniciar_drive():
-    try:
-        # Leer las credenciales de la caja fuerte (Secrets)
-        if "google_credentials" not in st.secrets:
-            return None
-            
-        info_credenciales = json.loads(st.secrets["google_credentials"])
-        creds = service_account.Credentials.from_service_account_info(info_credenciales, scopes=SCOPES)
-        service = build('drive', 'v3', credentials=creds)
-        
-        # Buscar la ID de la carpeta
-        results = service.files().list(q=f"mimeType='application/vnd.google-apps.folder' and name='{FOLDER_NAME}' and trashed=false", fields="files(id, name)").execute()
-        items = results.get('files', [])
-        if not items: return None
-        folder_id = items[0]['id']
-        
-        # Descargar archivos .db que no estén en local (Restaurar memoria)
-        db_results = service.files().list(q=f"'{folder_id}' in parents and trashed=false and name contains '.db'", fields="files(id, name)").execute()
-        dbs = db_results.get('files', [])
-        for db in dbs:
-            local_path = PUBS_DIR / db['name']
-            if not local_path.exists():
-                request = service.files().get_media(fileId=db['id'])
-                fh = io.BytesIO()
-                downloader = MediaIoBaseDownload(fh, request)
-                done = False
-                while done is False: status, done = downloader.next_chunk()
-                with open(local_path, 'wb') as f: f.write(fh.getvalue())
-        return {"service": service, "folder_id": folder_id}
-    except Exception as e:
-        st.error(f"Error de conexión con Drive: {e}")
-        return None
-
-drive_conn = iniciar_drive()
-
-def subir_a_drive(local_path, file_name):
-    if not drive_conn: 
-        st.error("⚠️ No hay conexión con Drive para guardar el archivo.")
-        return False
-    try:
-        file_metadata = {'name': file_name, 'parents': [drive_conn["folder_id"]]}
-        # resumable=True permite subir archivos pesados como Perspicacia sin que se corte
-        media = MediaFileUpload(local_path, mimetype='application/octet-stream', resumable=True)
-        drive_conn["service"].files().create(body=file_metadata, media_body=media, fields='id').execute()
-        return True
-    except Exception as e: 
-        st.error(f"❌ Error al subir {file_name} a Google Drive: {str(e)}")
-        return False
-
-# ── Funciones Base ─────────────────────────────────────────────
-def load_cfg():
-    if CFG_FILE.exists():
-        try: return json.loads(CFG_FILE.read_text())
-        except: pass
-    return {"gemini_key":"","password":"estudio2026"}
-
-def save_cfg(c): CFG_FILE.write_text(json.dumps(c, indent=2))
-
-if "cfg" not in st.session_state: st.session_state.cfg = load_cfg()
-cfg = st.session_state.cfg
-
-with st.sidebar:
-    st.markdown('<div style="padding:1rem 0 .5rem;font-family:\'EB Garamond\',serif;font-size:1.4rem;color:#c9a84c;font-style:italic;line-height:1.3">📖 Luz de la Palabra</div>', unsafe_allow_html=True)
-    if not st.session_state.get("auth", False):
-        pwd = st.text_input("Contraseña:", type="password")
-        if st.button("Entrar"):
-            if pwd == cfg.get("password","estudio2026"): st.session_state.auth = True; st.rerun()
-            else: st.error("Contraseña incorrecta")
-        st.stop()
-
-    key = cfg.get("gemini_key","")
-    with st.expander("🔑 Clave Gemini"):
-        nk = st.text_input("Clave:", type="password")
-        if st.button("Guardar clave"):
-            cfg["gemini_key"] = nk; save_cfg(cfg); st.session_state.cfg = cfg; st.success("✅"); time.sleep(1); st.rerun()
-    if not key: st.warning("Configura tu clave de Gemini"); st.stop()
-    
-    if drive_conn: st.success("☁️ Conectado a Google Drive")
-    else: st.error("☁️ Sin conexión a Drive. Revisa los Secrets de Streamlit.")
-
-# ── Importador JWPUB ───────────────────────────────────────────────
 def _es_sqlite(b): return len(b) > 16 and b[:16].startswith(b"SQLite format 3")
-
 def _extraer_sqlite(zf):
     for e in sorted(zf.infolist(), key=lambda x: x.file_size, reverse=True)[:10]:
         try:
@@ -143,48 +50,43 @@ def _extraer_sqlite(zf):
         except: pass
     return None
 
-def importar_jwpub(archivo_bytes, nombre):
-    nombre_limpio = re.sub(r"[^a-zA-Z0-9_\-]","_", Path(nombre).stem)
-    db_dest = PUBS_DIR / f"{nombre_limpio}.db"
+# ── SINCRONIZACIÓN AUTOMÁTICA EN SEGUNDO PLANO ─────────────────────
+@st.cache_resource(show_spinner=False)
+def auto_sincronizar():
     try:
-        with zipfile.ZipFile(io.BytesIO(archivo_bytes)) as zf:
-            db_bytes = _extraer_sqlite(zf)
-            if not db_bytes: return {"ok":False,"error":"No es un JWPUB válido"}
-            db_dest.write_bytes(db_bytes)
-            
-            # Subir a Drive y comprobar si hubo éxito
-            exito_drive = subir_a_drive(str(db_dest), f"{nombre_limpio}.db")
-            if exito_drive:
-                return {"ok":True,"nombre":nombre_limpio}
-            else:
-                return {"ok":False,"error":"Fallo al subir a Google Drive."}
-    except Exception as e: return {"ok":False,"error":str(e)}
+        if "google_credentials" not in st.secrets: return False
+        info = json.loads(st.secrets["google_credentials"])
+        creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+        service = build('drive', 'v3', credentials=creds)
+        
+        results = service.files().list(q=f"mimeType='application/vnd.google-apps.folder' and name='{FOLDER_NAME}' and trashed=false", fields="files(id, name)").execute()
+        items = results.get('files', [])
+        if not items: return False
+        
+        jwpub_results = service.files().list(q=f"'{items[0]['id']}' in parents and trashed=false and name contains '.jwpub'", fields="files(id, name)").execute()
+        for arch in jwpub_results.get('files', []):
+            db_dest = PUBS_DIR / f"{re.sub(r'[^a-zA-Z0-9_\-]','_', Path(arch['name']).stem)}.db"
+            if not db_dest.exists():
+                req = service.files().get_media(fileId=arch['id'])
+                fh = io.BytesIO()
+                MediaIoBaseDownload(fh, req).next_chunk() # Descarga rápida
+                with zipfile.ZipFile(io.BytesIO(fh.getvalue())) as zf:
+                    db_bytes = _extraer_sqlite(zf)
+                    if db_bytes: db_dest.write_bytes(db_bytes)
+        return True
+    except Exception: return False
 
-# ── Búsqueda e IA ──────────────────────────────────────────────
-STOPWORDS = {"que","con","los","las","del","una","por","para","como","son","era","fue"}
+# Ejecutar sincronización al abrir la app
+is_synced = auto_sincronizar()
 
-def buscar_todo(consulta):
-    palabras = [w for w in re.split(r'\W+', consulta.lower()) if len(w) >= 3 and w not in STOPWORDS][:8]
-    if not palabras: return []
-    resultados = []
-    for db in PUBS_DIR.glob("*.db"):
-        try:
-            conn = sqlite3.connect(str(db)); conn.row_factory = sqlite3.Row; c = conn.cursor()
-            cond = " OR ".join([f"LOWER(d.Title) LIKE ?"]*len(palabras))
-            params = [f"%{p}%" for p in palabras]
-            c.execute(f"SELECT Title FROM Document d WHERE {cond} LIMIT 10", params)
-            for r in c.fetchall(): resultados.append({"pub": db.stem, "titulo": r["Title"]})
-            conn.close()
-        except: pass
-    return resultados[:20]
-
+# ── PROMPT MAESTRO COMPLETO (¡INTACTO!) ───────────────────────────
 instrucciones = """Eres 'Luz de la Palabra', un asistente experto en oratoria, enseñanza y la preparación de comentarios y discursos. Estás capacitado con los mejores principios de estudio, investigación y enseñanza.
 
 Tu objetivo es ayudar al usuario a preparar sus asignaciones de forma estructurada, profunda y efectiva, utilizando estrictamente el material que él te proporcione.
 
 INSTRUCCIONES ESTRICTAS DE COMPORTAMIENTO:
 
-1. FUENTE DE INFORMACIÓN (REGLA DE ORO): Si el usuario pega un texto, párrafo, referencia, adjunta un documento o la base de datos te da información, ESA es tu fuente de investigación. NUNCA digas que "no tienes la información". Analiza profundamente el texto proporcionado y cumple la tarea basándote en él.
+1. FUENTE DE INFORMACIÓN (REGLA DE ORO): Si el usuario pega un texto, párrafo, referencia, adjunta un documento (PDF/TXT) o la base de datos te da información, ESA es tu fuente de investigación. NUNCA digas que "no tienes la información". Analiza profundamente el texto proporcionado y cumple la tarea basándote en él.
 
 2. ANÁLISIS PROFUNDO DE CAPÍTULOS O RELATOS:
    Cuando el usuario te pida analizar un capítulo o relato completo, estructura tu respuesta respondiendo a estas preguntas clave basándote en el texto:
@@ -224,94 +126,54 @@ INSTRUCCIONES ESTRICTAS DE COMPORTAMIENTO:
    - Usa preguntas retóricas para hacer reflexionar al auditorio.
    - Mantén siempre un tono amable, animador, edificante y respetuoso."""
 
-def preguntar_gemini(historial_ui, nueva_pregunta, contexto_jwpub, texto_adjunto):
+def preguntar_gemini(historial, pregunta, texto_pdf):
     try:
-        cliente = genai.Client(api_key=cfg["gemini_key"])
+        cliente = genai.Client(api_key=st.secrets["GEMINI_API_KEY"] if "GEMINI_API_KEY" in st.secrets else st.secrets.get("gemini_key", ""))
+        contents = [types.Content(role="user" if m["r"]=="u" else "model", parts=[types.Part(text=m["t"])]) for m in historial]
         
-        contents = []
-        for msg in historial_ui:
-            role = "user" if msg["r"] == "u" else "model"
-            contents.append(types.Content(role=role, parts=[types.Part(text=msg["t"])]))
+        prompt_final = pregunta
+        if texto_pdf: prompt_final += f"\n\n--- DOCUMENTO ADJUNTO (ÚSALO PARA CITAR PÁGINAS) ---\n{texto_pdf}"
         
-        prompt_actual = nueva_pregunta
-        if contexto_jwpub or texto_adjunto:
-            prompt_actual += "\n\n--- INFORMACIÓN DE REFERENCIA OBLIGATORIA ---\n"
-            if contexto_jwpub:
-                prompt_actual += f"\nDe las publicaciones (JWPUB):\n{contexto_jwpub}\n"
-            if texto_adjunto:
-                prompt_actual += f"\nDel documento adjunto (PDF/TXT):\n{texto_adjunto}\n"
-        
-        contents.append(types.Content(role="user", parts=[types.Part(text=prompt_actual)]))
-        
+        contents.append(types.Content(role="user", parts=[types.Part(text=prompt_final)]))
         resp = cliente.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=contents,
-            config=types.GenerateContentConfig(
-                temperature=0.2, 
-                max_output_tokens=3000,
-                system_instruction=instrucciones
-            )
+            model="gemini-2.5-flash", contents=contents,
+            config=types.GenerateContentConfig(temperature=0.2, system_instruction=instrucciones)
         )
-        return resp.text or "Sin respuesta."
-    except Exception as e: 
-        return f"❌ Error: {str(e)}"
+        return resp.text
+    except Exception as e: return f"❌ Error de conexión: {str(e)}"
 
-# ── Vistas ────────────────────────────────────────────────────────
-st.markdown('<div class="hero"><h1>Luz de la Palabra</h1><p>Tu asistente bíblico sincronizado en la nube</p></div>', unsafe_allow_html=True)
-pubs_ok = list(PUBS_DIR.glob("*.db"))
-t_chat, t_biblio = st.tabs(["💬 Consultar", "📚 Biblioteca"])
+# ── INTERFAZ VISUAL ───────────────────────────────────────────────
+st.markdown('<div class="hero"><h1>📖 Luz de la Palabra</h1><p>Tu asistente bíblico personal, rápido y elegante.</p></div>', unsafe_allow_html=True)
 
-with t_biblio:
-    archivos = st.file_uploader("Sube archivos JWPUB (Se guardarán en tu Drive de forma segura)", type=["jwpub","zip"], accept_multiple_files=True)
-    if archivos and st.button("Guardar en mi Biblioteca"):
-        for arch in archivos:
-            res = importar_jwpub(arch.read(), arch.name)
-            if res["ok"]: st.success(f"✅ {arch.name} importado y guardado en Drive!")
-            else: st.error(f"⚠️ {arch.name}: {res['error']}")
-        time.sleep(2); st.rerun()
-    if pubs_ok:
-        for p in pubs_ok: st.markdown(f'<div class="pub-card ok"><div class="t">📖 {p.stem}</div></div>', unsafe_allow_html=True)
+if is_synced:
+    st.markdown('<div class="status-badge">✅ Conectado y Sincronizado</div>', unsafe_allow_html=True)
+else:
+    st.warning("⚠️ No se pudo sincronizar Drive. Revisa los Secrets.")
 
-with t_chat:
-    if "hist" not in st.session_state: st.session_state.hist = []
+# Adjuntos (PDF)
+texto_adjunto = ""
+with st.expander("📎 Adjuntar PDF (Recomendado para citas exactas de párrafos)"):
+    archivo = st.file_uploader("", type=['pdf'])
+    if archivo:
+        lector = PyPDF2.PdfReader(archivo)
+        for pag in lector.pages:
+            if pag.extract_text(): texto_adjunto += pag.extract_text() + "\n"
+        st.success("PDF cargado. Pregúntame sobre él y te daré la página.")
+
+# Chat
+if "hist" not in st.session_state: st.session_state.hist = []
+
+for msg in st.session_state.hist:
+    st.markdown(f'<div class="{"chat-user" if msg["r"]=="u" else "chat-ai"}">{msg["t"]}</div>', unsafe_allow_html=True)
+
+if q := st.chat_input("Escribe tu pregunta o pídele que corrija algo..."):
+    st.session_state.hist.append({"r":"u","t":q})
+    st.markdown(f'<div class="chat-user">{q}</div>', unsafe_allow_html=True)
     
-    texto_adjunto = ""
-    with st.expander("📎 Adjuntar documento a tu próximo mensaje (PDF o TXT)"):
-        archivo_chat = st.file_uploader("Sube un archivo temporal para analizarlo:", type=['pdf', 'txt'])
-        if archivo_chat:
-            if archivo_chat.name.endswith('.pdf'):
-                try:
-                    lector = PyPDF2.PdfReader(archivo_chat)
-                    for pag in lector.pages:
-                        if pag.extract_text():
-                            texto_adjunto += pag.extract_text() + "\n"
-                    st.success("✅ PDF listo para ser analizado.")
-                except Exception as e:
-                    st.error("Error al leer PDF.")
-            elif archivo_chat.name.endswith('.txt'):
-                texto_adjunto = archivo_chat.read().decode("utf-8")
-                st.success("✅ TXT listo para ser analizado.")
-
-    for msg in st.session_state.hist:
-        clase = "msg-u" if msg["r"]=="u" else "msg-a"
-        st.markdown(f'<div class="{clase}">{msg["t"]}</div>', unsafe_allow_html=True)
-    
-    q = st.chat_input("Escribe tu pregunta o pídele que corrija algo...")
-    if q:
-        st.session_state.hist.append({"r":"u","t":q})
-        st.markdown(f'<div class="msg-u">{q}</div>', unsafe_allow_html=True)
-        caja = st.empty()
-        
-        caja.markdown('<div class="thinking">Buscando en tus publicaciones...</div>', unsafe_allow_html=True)
-        res = buscar_todo(q)
-        ctx = "\n".join([f"• {r['titulo']} (de {r['pub']})" for r in res]) if res else ""
-        
-        caja.markdown('<div class="thinking">Consultando a Gemini...</div>', unsafe_allow_html=True)
-        
+    with st.spinner("Investigando con precisión..."):
         historial_previo = st.session_state.hist[:-1]
-        resp = preguntar_gemini(historial_previo, q, ctx, texto_adjunto) 
+        resp = preguntar_gemini(historial_previo, q, texto_adjunto)
         
-        caja.empty()
-        st.session_state.hist.append({"r":"a","t":resp})
-        st.markdown(f'<div class="msg-a">{resp}</div>', unsafe_allow_html=True)
-        st.rerun()
+    st.session_state.hist.append({"r":"a","t":resp})
+    st.markdown(f'<div class="chat-ai">{resp}</div>', unsafe_allow_html=True)
+    st.rerun()
