@@ -1,5 +1,5 @@
 import streamlit as st
-import sqlite3, zipfile, json, os, re, io
+import zipfile, json, os, re, io
 from pathlib import Path
 import google.genai as genai
 from google.genai import types
@@ -16,67 +16,63 @@ from googleapiclient.http import MediaIoBaseDownload
 st.set_page_config(page_title="Luz de la Palabra", page_icon="📖", layout="wide", initial_sidebar_state="expanded")
 
 # ══════════════════════════════════════════════════════════════════
-# 2. DISEÑO VISUAL
+# 2. DISEÑO VISUAL — TEMA CLARO
 # ══════════════════════════════════════════════════════════════════
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Merriweather:ital,wght@0,300;0,700;1,300&display=swap');
 
 html, body, .stApp {
-    background: radial-gradient(circle at top left, #0F172A 0%, #0B1120 55%, #060A14 100%);
+    background: #F7F8FA;
     font-family: 'Inter', sans-serif;
-    color: #E2E8F0;
+    color: #1E293B;
 }
 
 section[data-testid="stSidebar"] {
-    background: #0B1120;
-    border-right: 1px solid rgba(212,175,55,0.15);
+    background: #FFFFFF;
+    border-right: 1px solid #E5E9F0;
 }
 
 .hero {
-    background: linear-gradient(135deg, #1E293B 0%, #0F172A 100%);
+    background: linear-gradient(135deg, #1E293B 0%, #334155 100%);
     padding: 2.4rem 2rem;
     border-radius: 20px;
     text-align: center;
     margin-bottom: 1.5rem;
     color: white;
-    border: 1px solid rgba(212,175,55,0.25);
-    box-shadow: 0 20px 45px rgba(0,0,0,0.45);
+    box-shadow: 0 15px 35px rgba(30,41,59,0.15);
 }
 .hero h1 {
     font-family: 'Merriweather', serif;
     font-size: 2.3rem;
     margin-bottom: 0.4rem;
-    background: linear-gradient(90deg, #D4AF37, #F1E5B0, #D4AF37);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
+    color: #F1E5B0 !important;
 }
-.hero p { color: #94A3B8; font-size: 1rem; margin: 0; }
+.hero p { color: #CBD5E1; font-size: 1rem; margin: 0; }
 
 .chat-user {
-    background: linear-gradient(135deg, #D4AF37 0%, #B8912E 100%);
-    color: #0B1120;
-    font-weight: 500;
+    background: #2563EB;
+    color: white;
     padding: 1.1rem 1.5rem;
     border-radius: 20px 20px 5px 20px;
     margin: 1rem 0 1rem 15%;
     font-size: 1.02rem;
     line-height: 1.5;
-    box-shadow: 0 6px 16px rgba(212,175,55,0.25);
+    box-shadow: 0 4px 12px rgba(37,99,235,0.2);
 }
 .chat-ai {
-    background: #111827;
-    color: #E2E8F0;
+    background: #FFFFFF;
+    color: #1E293B;
     padding: 1.5rem 1.6rem;
     border-radius: 5px 20px 20px 20px;
     margin: 1rem 15% 1rem 0;
-    border: 1px solid rgba(212,175,55,0.18);
+    border: 1px solid #E5E9F0;
     font-size: 1.02rem;
     line-height: 1.75;
-    box-shadow: 0 8px 20px rgba(0,0,0,0.35);
+    box-shadow: 0 4px 16px rgba(15,23,42,0.06);
 }
-.chat-ai strong { color: #D4AF37; }
-.chat-ai h1, .chat-ai h2, .chat-ai h3 { color: #D4AF37; }
+.chat-ai strong { color: #0F172A; }
+.chat-ai h1, .chat-ai h2, .chat-ai h3 { color: #1E3A8A; }
 
 .status-badge {
     display: inline-block;
@@ -87,24 +83,18 @@ section[data-testid="stSidebar"] {
     margin-bottom: 1.2rem;
     border: 1px solid;
 }
-.status-ok   { background: rgba(49,197,141,0.12); color: #34D399; border-color: rgba(52,211,153,0.4); }
-.status-warn { background: rgba(212,175,55,0.10); color: #D4AF37; border-color: rgba(212,175,55,0.4); }
+.status-ok   { background: #DEF7EC; color: #03543F; border-color: #31C48D; }
+.status-warn { background: #FEF3C7; color: #92400E; border-color: #F59E0B; }
 
 .source-tag {
     display: inline-block;
-    background: rgba(212,175,55,0.1);
-    border: 1px solid rgba(212,175,55,0.3);
-    color: #D4AF37;
+    background: #EEF2FF;
+    border: 1px solid #C7D2FE;
+    color: #3730A3;
     padding: 0.15rem 0.6rem;
     border-radius: 999px;
     font-size: 0.78rem;
-    margin: 0.15rem 0.2rem 0 0;
-}
-
-.stChatInput textarea, .stTextInput input {
-    background-color: #111827 !important;
-    color: #E2E8F0 !important;
-    border: 1px solid rgba(212,175,55,0.25) !important;
+    margin: 0.15rem 0.2rem 0.6rem 0;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -119,10 +109,6 @@ PUBS_DIR.mkdir(exist_ok=True)
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 FOLDER_NAME = "Mis Publicaciones"
 STOPWORDS = {"que", "con", "los", "las", "del", "una", "por", "para", "como", "son", "era", "fue", "esta", "este"}
-
-# Posibles nombres de columna de contenido en distintas versiones del esquema JWPUB.
-# Se prueban en orden hasta encontrar una que exista en la tabla Document.
-POSIBLES_COLUMNAS_CONTENIDO = ["Content", "Text", "Body"]
 
 
 def load_cfg():
@@ -142,7 +128,6 @@ if "cfg" not in st.session_state:
     st.session_state.cfg = load_cfg()
 cfg = st.session_state.cfg
 
-# La clave de Gemini puede venir de una variable de entorno (recomendado) o del archivo local.
 GEMINI_KEY_ENV = os.environ.get("GEMINI_API_KEY", "")
 
 if "debug_log" not in st.session_state:
@@ -150,12 +135,11 @@ if "debug_log" not in st.session_state:
 
 
 def log_debug(msg):
-    """Guarda errores/mensajes internos visibles en el panel de diagnóstico, en vez de silenciarlos."""
     st.session_state.debug_log.append(msg)
 
 
 # ══════════════════════════════════════════════════════════════════
-# 4. BARRA LATERAL: CLAVES Y SEGURIDAD
+# 4. BARRA LATERAL
 # ══════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown("### 📖 Luz de la Palabra")
@@ -217,39 +201,36 @@ with st.sidebar:
 
 
 # ══════════════════════════════════════════════════════════════════
-# 5. UTILIDADES
+# 5. UTILIDADES DE TEXTO
 # ══════════════════════════════════════════════════════════════════
-def _es_sqlite(b):
-    return len(b) > 16 and b[:16].startswith(b"SQLite format 3")
-
-
-def _extraer_sqlite(zf):
-    for e in sorted(zf.infolist(), key=lambda x: x.file_size, reverse=True)[:10]:
-        try:
-            data = zf.read(e.filename)
-            if _es_sqlite(data):
-                return data
-            if data[:2] == b"PK":
-                with zipfile.ZipFile(io.BytesIO(data)) as inner:
-                    res = _extraer_sqlite(inner)
-                    if res:
-                        return res
-        except Exception as e:
-            log_debug(f"[extraer_sqlite] {e}")
-    return None
-
-
 def _limpiar_html(texto):
     if not texto:
         return ""
+    texto = re.sub(r'<(script|style)[^>]*>.*?</\1>', ' ', texto, flags=re.IGNORECASE | re.DOTALL)
     texto = re.sub(r'<[^>]+>', ' ', texto)
     texto = re.sub(r'&nbsp;', ' ', texto)
+    texto = re.sub(r'&amp;', '&', texto)
+    texto = re.sub(r'&[a-z]+;', ' ', texto)
     texto = re.sub(r'\s+', ' ', texto)
     return texto.strip()
 
 
+def _extraer_titulo_html(html):
+    m = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
+    if m:
+        t = _limpiar_html(m.group(1))
+        if t:
+            return t
+    m = re.search(r'<h[1-3][^>]*>(.*?)</h[1-3]>', html, re.IGNORECASE | re.DOTALL)
+    if m:
+        t = _limpiar_html(m.group(1))
+        if t:
+            return t
+    return None
+
+
 # ══════════════════════════════════════════════════════════════════
-# 6. SINCRONIZACIÓN AUTOMÁTICA CON DRIVE
+# 6. SINCRONIZACIÓN AUTOMÁTICA CON DRIVE (EPUB + PDF)
 # ══════════════════════════════════════════════════════════════════
 @st.cache_resource(show_spinner=False)
 def auto_sincronizar():
@@ -271,42 +252,26 @@ def auto_sincronizar():
             return False
 
         archivos_drive = service.files().list(
-            q=f"'{items[0]['id']}' in parents and trashed=false and (name contains '.jwpub' or name contains '.pdf')",
+            q=f"'{items[0]['id']}' in parents and trashed=false and (name contains '.epub' or name contains '.pdf')",
             fields="files(id, name)"
         ).execute()
 
         descargados = 0
         for arch in archivos_drive.get('files', []):
             nombre = arch['name']
+            if not (nombre.lower().endswith('.epub') or nombre.lower().endswith('.pdf')):
+                continue
             try:
-                if nombre.lower().endswith('.jwpub'):
-                    db_dest = PUBS_DIR / f"{re.sub(r'[^a-zA-Z0-9_-]', '_', Path(nombre).stem)}.db"
-                    if not db_dest.exists():
-                        req = service.files().get_media(fileId=arch['id'])
-                        fh = io.BytesIO()
-                        downloader = MediaIoBaseDownload(fh, req)
-                        done = False
-                        while not done:
-                            _, done = downloader.next_chunk()
-                        with zipfile.ZipFile(io.BytesIO(fh.getvalue())) as zf:
-                            db_bytes = _extraer_sqlite(zf)
-                            if db_bytes:
-                                db_dest.write_bytes(db_bytes)
-                                descargados += 1
-                            else:
-                                log_debug(f"[sync] No se encontró base SQLite dentro de {nombre}")
-
-                elif nombre.lower().endswith('.pdf'):
-                    pdf_dest = PUBS_DIR / nombre
-                    if not pdf_dest.exists():
-                        req = service.files().get_media(fileId=arch['id'])
-                        fh = io.BytesIO()
-                        downloader = MediaIoBaseDownload(fh, req)
-                        done = False
-                        while not done:
-                            _, done = downloader.next_chunk()
-                        pdf_dest.write_bytes(fh.getvalue())
-                        descargados += 1
+                dest = PUBS_DIR / nombre
+                if not dest.exists():
+                    req = service.files().get_media(fileId=arch['id'])
+                    fh = io.BytesIO()
+                    downloader = MediaIoBaseDownload(fh, req)
+                    done = False
+                    while not done:
+                        _, done = downloader.next_chunk()
+                    dest.write_bytes(fh.getvalue())
+                    descargados += 1
             except Exception as e:
                 log_debug(f"[sync] Error descargando '{nombre}': {e}")
 
@@ -321,70 +286,50 @@ is_synced = auto_sincronizar()
 
 
 # ══════════════════════════════════════════════════════════════════
-# 7. BÚSQUEDA HÍBRIDA (JWPUB Y PDF) — CON CONTENIDO REAL
+# 7. BÚSQUEDA HÍBRIDA (EPUB Y PDF) — CONTENIDO REAL, SIN CIFRADO
 # ══════════════════════════════════════════════════════════════════
-def _columna_contenido_disponible(cursor):
-    """Detecta cuál columna de texto existe realmente en la tabla Document de este .db."""
+def _buscar_en_epub(epub_path, palabras, max_chars):
+    resultado = ""
     try:
-        cursor.execute("PRAGMA table_info(Document)")
-        columnas = {row[1] for row in cursor.fetchall()}
+        with zipfile.ZipFile(epub_path) as z:
+            nombres_html = [
+                n for n in z.namelist()
+                if n.lower().endswith(('.xhtml', '.html', '.htm')) and not n.startswith('__MACOSX')
+            ]
+            if not nombres_html:
+                log_debug(f"[epub] {epub_path.name}: no se hallaron archivos HTML/XHTML dentro.")
+                return ""
+
+            for nombre_html in nombres_html:
+                if len(resultado) >= max_chars:
+                    break
+                try:
+                    data = z.read(nombre_html).decode('utf-8', errors='ignore')
+                except Exception as e:
+                    log_debug(f"[epub] Error leyendo {nombre_html} en {epub_path.name}: {e}")
+                    continue
+
+                texto_limpio = _limpiar_html(data)
+                if texto_limpio and any(p in texto_limpio.lower() for p in palabras):
+                    titulo = _extraer_titulo_html(data) or nombre_html
+                    resultado += f"--- {titulo} (de {epub_path.stem}) ---\n{texto_limpio[:2500]}\n\n"
+    except zipfile.BadZipFile:
+        log_debug(f"[epub] {epub_path.name} no es un EPUB/ZIP válido.")
     except Exception as e:
-        log_debug(f"[schema] No se pudo leer PRAGMA table_info(Document): {e}")
-        return None
-    for candidata in POSIBLES_COLUMNAS_CONTENIDO:
-        if candidata in columnas:
-            return candidata
-    return None
+        log_debug(f"[epub] Error general con {epub_path.name}: {e}")
+    return resultado
 
 
-def buscar_en_neuronas(consulta, max_chars_jwpub=6000, max_chars_pdf=4000):
+def buscar_en_neuronas(consulta, max_chars_epub=6000, max_chars_pdf=4000):
     palabras = [w for w in re.split(r'\W+', consulta.lower()) if len(w) >= 3 and w not in STOPWORDS][:8]
     if not palabras:
         return "", ""
 
-    res_jwpub = ""
-    fuentes_jwpub = []
-
-    for db in PUBS_DIR.glob("*.db"):
-        if len(res_jwpub) >= max_chars_jwpub:
+    res_epub = ""
+    for epub_file in PUBS_DIR.glob("*.epub"):
+        if len(res_epub) >= max_chars_epub:
             break
-        try:
-            conn = sqlite3.connect(str(db))
-            conn.row_factory = sqlite3.Row
-            c = conn.cursor()
-
-            col_contenido = _columna_contenido_disponible(c)
-
-            if col_contenido:
-                cond = " OR ".join([f"LOWER(d.Title) LIKE ? OR LOWER(d.{col_contenido}) LIKE ?"] * len(palabras))
-                params = []
-                for p in palabras:
-                    params.extend([f"%{p}%", f"%{p}%"])
-                c.execute(f"SELECT Title, {col_contenido} as cuerpo FROM Document d WHERE {cond} LIMIT 4", params)
-                filas = c.fetchall()
-                if not filas:
-                    log_debug(f"[busqueda] Sin coincidencias con contenido en {db.name}")
-                for r in filas:
-                    texto_limpio = _limpiar_html(r['cuerpo'])
-                    if texto_limpio:
-                        res_jwpub += f"--- {r['Title']} (de {db.stem}) ---\n{texto_limpio[:2500]}\n\n"
-                        fuentes_jwpub.append(f"{r['Title']} ({db.stem})")
-                    else:
-                        # Hay título pero no se pudo extraer cuerpo: se avisa, no se inventa.
-                        res_jwpub += f"--- {r['Title']} (de {db.stem}) ---\n[Sin texto extraíble en esta entrada]\n\n"
-            else:
-                # No se encontró columna de contenido conocida: se cae de vuelta a solo título,
-                # pero quedando registrado para que sepas que ese .db necesita revisión de esquema.
-                log_debug(f"[schema] {db.name}: no se halló columna de contenido conocida en Document.")
-                cond = " OR ".join(["LOWER(d.Title) LIKE ?"] * len(palabras))
-                params = [f"%{p}%" for p in palabras]
-                c.execute(f"SELECT Title FROM Document d WHERE {cond} LIMIT 5", params)
-                for r in c.fetchall():
-                    res_jwpub += f"--- {r['Title']} (de {db.stem}) ---\n[Solo título disponible; esquema de BD sin columna de contenido reconocida]\n\n"
-
-            conn.close()
-        except Exception as e:
-            log_debug(f"[busqueda] Error leyendo {db.name}: {e}")
+        res_epub += _buscar_en_epub(epub_file, palabras, max_chars_epub - len(res_epub))
 
     res_pdf = ""
     for pdf_file in PUBS_DIR.glob("*.pdf"):
@@ -401,7 +346,7 @@ def buscar_en_neuronas(consulta, max_chars_jwpub=6000, max_chars_pdf=4000):
         except Exception as e:
             log_debug(f"[busqueda] Error leyendo PDF {pdf_file.name}: {e}")
 
-    return res_jwpub.strip(), res_pdf.strip()
+    return res_epub.strip(), res_pdf.strip()
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -414,9 +359,9 @@ Tu objetivo es ayudar al usuario a preparar sus asignaciones de forma estructura
 INSTRUCCIONES ESTRICTAS DE COMPORTAMIENTO:
 
 1. FUENTE DE INFORMACIÓN (REGLA DE ORO):
-   Se te proporcionará contexto extraído directamente de las publicaciones del usuario (JWPUB y/o PDF).
+   Se te proporcionará contexto extraído directamente de las publicaciones del usuario (EPUB y/o PDF).
    - Si el contexto incluye TEXTO REAL extraído de una publicación, ese texto es tu fuente principal y autoritativa. Básate en él y cita el título exacto y, si es PDF, la página.
-   - Si una entrada del contexto indica "[Sin texto extraíble]" o "[Solo título disponible]", NO inventes el contenido. En ese caso, dilo explícitamente al usuario ("no pude extraer el texto completo de esta publicación, pero según el título parece tratar sobre...") y ofrece una respuesta general marcándola claramente como conocimiento general, no como cita textual.
+   - Si no se encontró contexto relevante para la pregunta, dilo explícitamente y responde con conocimiento general, aclarándolo como tal.
    - Nunca presentes conocimiento general como si fuera una cita textual de una publicación específica.
 
 2. ANÁLISIS PROFUNDO DE CAPÍTULOS O RELATOS:
@@ -448,7 +393,7 @@ INSTRUCCIONES ESTRICTAS DE COMPORTAMIENTO:
    - Mantén un tono amable, animador, edificante y respetuoso. Usa negritas y viñetas."""
 
 
-def preguntar_gemini(historial, pregunta, ctx_jwpub, ctx_pdf):
+def preguntar_gemini(historial, pregunta, ctx_epub, ctx_pdf):
     try:
         cliente = genai.Client(api_key=key)
         contents = [
@@ -457,10 +402,10 @@ def preguntar_gemini(historial, pregunta, ctx_jwpub, ctx_pdf):
         ]
 
         prompt_final = pregunta
-        if ctx_jwpub or ctx_pdf:
+        if ctx_epub or ctx_pdf:
             prompt_final += "\n\n--- RECURSOS ENCONTRADOS EN TU MEMORIA (DRIVE) ---\n"
-            if ctx_jwpub:
-                prompt_final += f"\n📚 TEXTO EXTRAÍDO DE TUS PUBLICACIONES JWPUB:\n{ctx_jwpub}\n"
+            if ctx_epub:
+                prompt_final += f"\n📚 TEXTO EXTRAÍDO DE TUS PUBLICACIONES EPUB:\n{ctx_epub}\n"
             if ctx_pdf:
                 prompt_final += f"\n📄 TEXTO EXACTO DE TUS PDF (cita párrafo o página):\n{ctx_pdf}\n"
         else:
@@ -472,7 +417,7 @@ def preguntar_gemini(historial, pregunta, ctx_jwpub, ctx_pdf):
             contents=contents,
             config=types.GenerateContentConfig(temperature=0.3, system_instruction=instrucciones)
         )
-        return resp.text, bool(ctx_jwpub or ctx_pdf)
+        return resp.text, bool(ctx_epub or ctx_pdf)
     except Exception as e:
         log_debug(f"[gemini] {e}")
         return f"❌ Error de conexión: {str(e)}", False
@@ -487,17 +432,17 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-n_db = len(list(PUBS_DIR.glob("*.db")))
+n_epub = len(list(PUBS_DIR.glob("*.epub")))
 n_pdf = len(list(PUBS_DIR.glob("*.pdf")))
 
 if is_synced:
     st.markdown(
-        f'<div class="status-badge status-ok">✅ Conectado con Google Drive · {n_db} publicaciones JWPUB · {n_pdf} PDF</div>',
+        f'<div class="status-badge status-ok">✅ Conectado con Google Drive · {n_epub} publicaciones EPUB · {n_pdf} PDF</div>',
         unsafe_allow_html=True
     )
 else:
     st.markdown(
-        f'<div class="status-badge status-warn">⚠️ Sin conexión a Drive · usando {n_db} JWPUB y {n_pdf} PDF ya guardados localmente</div>',
+        f'<div class="status-badge status-warn">⚠️ Sin conexión a Drive · usando {n_epub} EPUB y {n_pdf} PDF ya guardados localmente</div>',
         unsafe_allow_html=True
     )
 
@@ -516,9 +461,9 @@ if q := st.chat_input("Escribe tu pregunta bíblica..."):
     st.markdown(f'<div class="chat-user">{q}</div>', unsafe_allow_html=True)
 
     with st.spinner("Investigando en tus publicaciones..."):
-        ctx_jwpub, ctx_pdf = buscar_en_neuronas(q)
+        ctx_epub, ctx_pdf = buscar_en_neuronas(q)
         historial_previo = st.session_state.hist[:-1]
-        resp, tuvo_contexto = preguntar_gemini(historial_previo, q, ctx_jwpub, ctx_pdf)
+        resp, tuvo_contexto = preguntar_gemini(historial_previo, q, ctx_epub, ctx_pdf)
 
     if tuvo_contexto:
         resp = '<span class="source-tag">📚 Basado en tus publicaciones</span><br><br>' + resp
