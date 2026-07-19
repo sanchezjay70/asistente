@@ -286,10 +286,25 @@ is_synced = auto_sincronizar()
 
 
 # ══════════════════════════════════════════════════════════════════
-# 7. BÚSQUEDA HÍBRIDA (EPUB Y PDF) — CONTENIDO REAL, SIN CIFRADO
+# 7. BÚSQUEDA HÍBRIDA (EPUB Y PDF) — ESCANEA TODAS LAS PUBLICACIONES
 # ══════════════════════════════════════════════════════════════════
-def _buscar_en_epub(epub_path, palabras, max_chars):
-    resultado = ""
+# Diseño: primero se recopilan TODAS las coincidencias de TODOS los archivos
+# (sin detenerse temprano), cada una con un puntaje de relevancia. Luego se
+# arma el contexto final repartiendo espacio en round-robin entre archivos
+# distintos, para que ninguna publicación agote el presupuesto y deje a las
+# demás sin oportunidad de aparecer.
+
+MAX_COINCIDENCIAS_POR_ARCHIVO = 3   # tope de fragmentos que se toman de una misma publicación
+MAX_CHARS_POR_FRAGMENTO = 1400      # tamaño de cada fragmento citado
+
+
+def _puntaje_relevancia(texto_lower, palabras):
+    return sum(texto_lower.count(p) for p in palabras)
+
+
+def _candidatos_de_epub(epub_path, palabras):
+    """Devuelve TODAS las coincidencias de este EPUB, con puntaje, sin recortar por presupuesto global."""
+    candidatos = []
     try:
         with zipfile.ZipFile(epub_path) as z:
             nombres_html = [
@@ -298,11 +313,9 @@ def _buscar_en_epub(epub_path, palabras, max_chars):
             ]
             if not nombres_html:
                 log_debug(f"[epub] {epub_path.name}: no se hallaron archivos HTML/XHTML dentro.")
-                return ""
+                return candidatos
 
             for nombre_html in nombres_html:
-                if len(resultado) >= max_chars:
-                    break
                 try:
                     data = z.read(nombre_html).decode('utf-8', errors='ignore')
                 except Exception as e:
@@ -310,43 +323,103 @@ def _buscar_en_epub(epub_path, palabras, max_chars):
                     continue
 
                 texto_limpio = _limpiar_html(data)
-                if texto_limpio and any(p in texto_limpio.lower() for p in palabras):
+                if not texto_limpio:
+                    continue
+                texto_lower = texto_limpio.lower()
+                score = _puntaje_relevancia(texto_lower, palabras)
+                if score > 0:
                     titulo = _extraer_titulo_html(data) or nombre_html
-                    resultado += f"--- {titulo} (de {epub_path.stem}) ---\n{texto_limpio[:2500]}\n\n"
+                    candidatos.append({
+                        "score": score,
+                        "titulo": titulo,
+                        "archivo": epub_path.stem,
+                        "texto": texto_limpio[:MAX_CHARS_POR_FRAGMENTO],
+                    })
     except zipfile.BadZipFile:
         log_debug(f"[epub] {epub_path.name} no es un EPUB/ZIP válido.")
     except Exception as e:
         log_debug(f"[epub] Error general con {epub_path.name}: {e}")
-    return resultado
+
+    candidatos.sort(key=lambda c: -c["score"])
+    return candidatos[:MAX_COINCIDENCIAS_POR_ARCHIVO]
 
 
-def buscar_en_neuronas(consulta, max_chars_epub=6000, max_chars_pdf=4000):
+def _candidatos_de_pdf(pdf_path, palabras):
+    candidatos = []
+    try:
+        lector = PyPDF2.PdfReader(pdf_path)
+        for i, pag in enumerate(lector.pages):
+            texto = pag.extract_text()
+            if not texto:
+                continue
+            texto_lower = texto.lower()
+            score = _puntaje_relevancia(texto_lower, palabras)
+            if score > 0:
+                candidatos.append({
+                    "score": score,
+                    "titulo": f"{pdf_path.name} · página {i + 1}",
+                    "archivo": pdf_path.stem,
+                    "texto": texto[:MAX_CHARS_POR_FRAGMENTO],
+                })
+    except Exception as e:
+        log_debug(f"[busqueda] Error leyendo PDF {pdf_path.name}: {e}")
+
+    candidatos.sort(key=lambda c: -c["score"])
+    return candidatos[:MAX_COINCIDENCIAS_POR_ARCHIVO]
+
+
+def _ensamblar_round_robin(candidatos, max_chars):
+    """Reparte el presupuesto de caracteres en rondas entre archivos distintos,
+    para que ninguno acapare todo el espacio a costa de los demás."""
+    por_archivo = {}
+    for c in candidatos:
+        por_archivo.setdefault(c["archivo"], []).append(c)
+    for lst in por_archivo.values():
+        lst.sort(key=lambda c: -c["score"])
+
+    resultado = ""
+    archivos_activos = list(por_archivo.keys())
+    while archivos_activos and len(resultado) < max_chars:
+        progreso = False
+        for archivo in list(archivos_activos):
+            lst = por_archivo[archivo]
+            if not lst:
+                archivos_activos.remove(archivo)
+                continue
+            c = lst.pop(0)
+            resultado += f"--- {c['titulo']} (de {c['archivo']}) ---\n{c['texto']}\n\n"
+            progreso = True
+            if len(resultado) >= max_chars:
+                break
+        if not progreso:
+            break
+    return resultado.strip()
+
+
+def buscar_en_neuronas(consulta, max_chars_epub=10000, max_chars_pdf=6000):
     palabras = [w for w in re.split(r'\W+', consulta.lower()) if len(w) >= 3 and w not in STOPWORDS][:8]
     if not palabras:
         return "", ""
 
-    res_epub = ""
-    for epub_file in PUBS_DIR.glob("*.epub"):
-        if len(res_epub) >= max_chars_epub:
-            break
-        res_epub += _buscar_en_epub(epub_file, palabras, max_chars_epub - len(res_epub))
+    archivos_epub = list(PUBS_DIR.glob("*.epub"))
+    archivos_pdf = list(PUBS_DIR.glob("*.pdf"))
+    log_debug(f"[busqueda] Escaneando {len(archivos_epub)} EPUB y {len(archivos_pdf)} PDF para: {palabras}")
 
-    res_pdf = ""
-    for pdf_file in PUBS_DIR.glob("*.pdf"):
-        if len(res_pdf) >= max_chars_pdf:
-            break
-        try:
-            lector = PyPDF2.PdfReader(pdf_file)
-            for i, pag in enumerate(lector.pages):
-                if len(res_pdf) >= max_chars_pdf:
-                    break
-                texto = pag.extract_text()
-                if texto and any(p in texto.lower() for p in palabras):
-                    res_pdf += f"--- Documento: {pdf_file.name} | Página: {i + 1} ---\n{texto[:800]}...\n\n"
-        except Exception as e:
-            log_debug(f"[busqueda] Error leyendo PDF {pdf_file.name}: {e}")
+    candidatos_epub = []
+    for epub_file in archivos_epub:
+        candidatos_epub.extend(_candidatos_de_epub(epub_file, palabras))
 
-    return res_epub.strip(), res_pdf.strip()
+    candidatos_pdf = []
+    for pdf_file in archivos_pdf:
+        candidatos_pdf.extend(_candidatos_de_pdf(pdf_file, palabras))
+
+    archivos_con_match_epub = {c["archivo"] for c in candidatos_epub}
+    log_debug(f"[busqueda] Publicaciones EPUB con coincidencia: {len(archivos_con_match_epub)} de {len(archivos_epub)}")
+
+    res_epub = _ensamblar_round_robin(candidatos_epub, max_chars_epub)
+    res_pdf = _ensamblar_round_robin(candidatos_pdf, max_chars_pdf)
+
+    return res_epub, res_pdf
 
 
 # ══════════════════════════════════════════════════════════════════
