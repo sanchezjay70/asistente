@@ -284,6 +284,19 @@ def auto_sincronizar():
 
 is_synced = auto_sincronizar()
 
+st.sidebar.file_uploader(
+    "O arrastra aquí tus .epub / .pdf directamente",
+    type=["epub", "pdf"],
+    accept_multiple_files=True,
+    key="uploader_manual",
+    help="Alternativa a Drive: coloca tus publicaciones directamente."
+)
+if st.session_state.get("uploader_manual"):
+    for f in st.session_state["uploader_manual"]:
+        destino = PUBS_DIR / f.name
+        if not destino.exists():
+            destino.write_bytes(f.getbuffer())
+
 
 # ══════════════════════════════════════════════════════════════════
 # 7. BÚSQUEDA HÍBRIDA (EPUB Y PDF) — ESCANEA TODAS LAS PUBLICACIONES
@@ -470,7 +483,7 @@ def preguntar_gemini(historial, pregunta, ctx_epub, ctx_pdf):
     try:
         cliente = genai.Client(api_key=key)
         contents = [
-            types.Content(role="user" if m["r"] == "u" else "model", parts=[types.Part(text=m["t"])])
+            types.Content(role="user" if m["r"] == "u" else "model", parts=[types.Part(text=re.sub('<[^<]+?>', '', m["t"]))])
             for m in historial
         ]
 
