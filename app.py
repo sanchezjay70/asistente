@@ -1,5 +1,5 @@
 import streamlit as st
-import zipfile, json, os, re, io
+import zipfile, json, os, re, io, hashlib
 from pathlib import Path
 import google.genai as genai
 from google.genai import types
@@ -282,7 +282,20 @@ def auto_sincronizar():
         return False
 
 
-is_synced = auto_sincronizar()
+n_epub_local = len(list(PUBS_DIR.glob("*.epub")))
+n_pdf_local = len(list(PUBS_DIR.glob("*.pdf")))
+
+sincronizar_con_drive = st.sidebar.toggle(
+    "🔄 Sincronizar con Drive al iniciar",
+    value=cfg.get("sincronizar_con_drive", n_epub_local + n_pdf_local == 0),
+    help="Si ya tienes tus publicaciones guardadas localmente, puedes apagar esto para que la app abra más rápido."
+)
+if sincronizar_con_drive != cfg.get("sincronizar_con_drive"):
+    cfg["sincronizar_con_drive"] = sincronizar_con_drive
+    save_cfg(cfg)
+    st.session_state.cfg = cfg
+
+is_synced = auto_sincronizar() if sincronizar_con_drive else False
 
 st.sidebar.file_uploader(
     "O arrastra aquí tus .epub / .pdf directamente",
@@ -315,9 +328,20 @@ def _puntaje_relevancia(texto_lower, palabras):
     return sum(texto_lower.count(p) for p in palabras)
 
 
-def _candidatos_de_epub(epub_path, palabras):
-    """Devuelve TODAS las coincidencias de este EPUB, con puntaje, sin recortar por presupuesto global."""
-    candidatos = []
+def _manifest_actual():
+    """Nombre + fecha de modificación de cada archivo, para saber si el corpus cacheado sigue vigente."""
+    archivos = sorted(PUBS_DIR.glob("*.epub")) + sorted(PUBS_DIR.glob("*.pdf"))
+    return {p.name: p.stat().st_mtime for p in archivos}
+
+
+def _hash_manifest(manifest):
+    s = json.dumps(manifest, sort_keys=True)
+    return hashlib.md5(s.encode()).hexdigest()
+
+
+def _extraer_secciones_epub(epub_path):
+    """Lee y limpia UNA vez el HTML de cada sección del EPUB. No busca nada, solo extrae texto."""
+    secciones = []
     try:
         with zipfile.ZipFile(epub_path) as z:
             nombres_html = [
@@ -326,57 +350,67 @@ def _candidatos_de_epub(epub_path, palabras):
             ]
             if not nombres_html:
                 log_debug(f"[epub] {epub_path.name}: no se hallaron archivos HTML/XHTML dentro.")
-                return candidatos
-
+                return secciones
             for nombre_html in nombres_html:
                 try:
                     data = z.read(nombre_html).decode('utf-8', errors='ignore')
                 except Exception as e:
                     log_debug(f"[epub] Error leyendo {nombre_html} en {epub_path.name}: {e}")
                     continue
-
                 texto_limpio = _limpiar_html(data)
                 if not texto_limpio:
                     continue
-                texto_lower = texto_limpio.lower()
-                score = _puntaje_relevancia(texto_lower, palabras)
-                if score > 0:
-                    titulo = _extraer_titulo_html(data) or nombre_html
-                    candidatos.append({
-                        "score": score,
-                        "titulo": titulo,
-                        "archivo": epub_path.stem,
-                        "texto": texto_limpio[:MAX_CHARS_POR_FRAGMENTO],
-                    })
+                titulo = _extraer_titulo_html(data) or nombre_html
+                secciones.append({"titulo": titulo, "texto": texto_limpio})
     except zipfile.BadZipFile:
         log_debug(f"[epub] {epub_path.name} no es un EPUB/ZIP válido.")
     except Exception as e:
         log_debug(f"[epub] Error general con {epub_path.name}: {e}")
-
-    candidatos.sort(key=lambda c: -c["score"])
-    return candidatos[:MAX_COINCIDENCIAS_POR_ARCHIVO]
+    return secciones
 
 
-def _candidatos_de_pdf(pdf_path, palabras):
-    candidatos = []
+def _extraer_paginas_pdf(pdf_path):
+    """Lee UNA vez el texto de cada página del PDF. No busca nada, solo extrae texto."""
+    paginas = []
     try:
         lector = PyPDF2.PdfReader(pdf_path)
         for i, pag in enumerate(lector.pages):
             texto = pag.extract_text()
-            if not texto:
-                continue
-            texto_lower = texto.lower()
-            score = _puntaje_relevancia(texto_lower, palabras)
-            if score > 0:
-                candidatos.append({
-                    "score": score,
-                    "titulo": f"{pdf_path.name} · página {i + 1}",
-                    "archivo": pdf_path.stem,
-                    "texto": texto[:MAX_CHARS_POR_FRAGMENTO],
-                })
+            if texto:
+                paginas.append({"titulo": f"{pdf_path.name} · página {i + 1}", "texto": texto})
     except Exception as e:
         log_debug(f"[busqueda] Error leyendo PDF {pdf_path.name}: {e}")
+    return paginas
 
+
+@st.cache_resource(show_spinner="Preparando tus publicaciones (solo la primera vez o si agregaste archivos nuevos)...")
+def _extraer_corpus(_manifest_hash):
+    """Extrae y limpia el texto de TODAS las publicaciones UNA sola vez por cada versión de tus archivos.
+    _manifest_hash cambia si agregas/quitas/modificas archivos, y eso invalida el caché automáticamente."""
+    corpus_epub = []
+    for epub_file in sorted(PUBS_DIR.glob("*.epub")):
+        corpus_epub.append({"archivo": epub_file.stem, "secciones": _extraer_secciones_epub(epub_file)})
+    corpus_pdf = []
+    for pdf_file in sorted(PUBS_DIR.glob("*.pdf")):
+        corpus_pdf.append({"archivo": pdf_file.stem, "secciones": _extraer_paginas_pdf(pdf_file)})
+    total_secciones = sum(len(c["secciones"]) for c in corpus_epub) + sum(len(c["secciones"]) for c in corpus_pdf)
+    log_debug(f"[corpus] Extraído: {len(corpus_epub)} EPUB + {len(corpus_pdf)} PDF, {total_secciones} secciones/páginas en total.")
+    return corpus_epub, corpus_pdf
+
+
+def _candidatos_de_secciones(archivo_stem, secciones, palabras):
+    """Solo puntúa texto YA extraído y limpio — sin tocar disco, por eso es rápido."""
+    candidatos = []
+    for sec in secciones:
+        texto_lower = sec["texto"].lower()
+        score = _puntaje_relevancia(texto_lower, palabras)
+        if score > 0:
+            candidatos.append({
+                "score": score,
+                "titulo": sec["titulo"],
+                "archivo": archivo_stem,
+                "texto": sec["texto"][:MAX_CHARS_POR_FRAGMENTO],
+            })
     candidatos.sort(key=lambda c: -c["score"])
     return candidatos[:MAX_COINCIDENCIAS_POR_ARCHIVO]
 
@@ -414,20 +448,19 @@ def buscar_en_neuronas(consulta, max_chars_epub=10000, max_chars_pdf=6000):
     if not palabras:
         return "", ""
 
-    archivos_epub = list(PUBS_DIR.glob("*.epub"))
-    archivos_pdf = list(PUBS_DIR.glob("*.pdf"))
-    log_debug(f"[busqueda] Escaneando {len(archivos_epub)} EPUB y {len(archivos_pdf)} PDF para: {palabras}")
+    manifest_hash = _hash_manifest(_manifest_actual())
+    corpus_epub, corpus_pdf = _extraer_corpus(manifest_hash)
 
     candidatos_epub = []
-    for epub_file in archivos_epub:
-        candidatos_epub.extend(_candidatos_de_epub(epub_file, palabras))
+    for item in corpus_epub:
+        candidatos_epub.extend(_candidatos_de_secciones(item["archivo"], item["secciones"], palabras))
 
     candidatos_pdf = []
-    for pdf_file in archivos_pdf:
-        candidatos_pdf.extend(_candidatos_de_pdf(pdf_file, palabras))
+    for item in corpus_pdf:
+        candidatos_pdf.extend(_candidatos_de_secciones(item["archivo"], item["secciones"], palabras))
 
     archivos_con_match_epub = {c["archivo"] for c in candidatos_epub}
-    log_debug(f"[busqueda] Publicaciones EPUB con coincidencia: {len(archivos_con_match_epub)} de {len(archivos_epub)}")
+    log_debug(f"[busqueda] Publicaciones EPUB con coincidencia: {len(archivos_con_match_epub)} de {len(corpus_epub)}")
 
     res_epub = _ensamblar_round_robin(candidatos_epub, max_chars_epub)
     res_pdf = _ensamblar_round_robin(candidatos_pdf, max_chars_pdf)
